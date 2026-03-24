@@ -13,7 +13,10 @@ app.use(cors()); // enable CORS for all origins
 const port = 3000;
 const SALT_ROUNDS = 12;
 const JWT_SECRET = "1admin1";
-
+const API_KEY = "1krdb1";
+let currentStats = {
+    playerCount: 0
+};
 /* =========================
    Database
 ========================= */
@@ -142,6 +145,28 @@ app.get("/profile", auth, (req, res) => {
     });
 });
 
+/* =========================
+    KRDB Mod
+========================= */
+app.post("/api/stats", (req, res) => {
+    const key = req.headers["x-api-key"];
+    if (key !== API_KEY) {
+        return res.status(403).json({ error: "Unauthorized" });
+    }
+    console.log("REQUEST FROM MOD: " + req);
+
+    const { playerCount } = req.body;
+
+    if (typeof playerCount === "number") {
+        currentStats.playerCount = playerCount;
+    }
+
+    res.json({ success: true });
+});
+
+app.get("/api/stats", (req, res) => {
+    res.json(currentStats);
+});
 /* =========================
    Sections Routes
 ========================= */

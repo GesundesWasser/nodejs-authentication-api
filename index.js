@@ -155,13 +155,18 @@ app.post("/api/stats", (req, res) => {
     }
     console.log("REQUEST FROM MOD: " + req);
 
-    const { playerCount } = req.body;
+    const { playerCount, players } = req.body;
 
     if (typeof playerCount === "number") {
         currentStats.playerCount = playerCount;
     }
 
-    res.json({ success: true });
+    if (Array.isArray(players) && players.every(p => typeof p === "string")) {
+        currentStats.players = players;
+        currentStats.playerCount = players.length;
+    }
+
+    res.json({ success: true, currentStats });
 });
 
 app.get("/api/stats", (req, res) => {

@@ -15,7 +15,8 @@ const SALT_ROUNDS = 12;
 const JWT_SECRET = "1admin1";
 const API_KEY = "1krdb1";
 let currentStats = {
-    playerCount: 0
+    playerCount: 0,
+    players: []
 };
 /* =========================
    Database

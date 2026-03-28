@@ -5,6 +5,14 @@ const sqlite3 = require("sqlite3").verbose();
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const cors = require("cors");
+const multer = require("multer");
+const sharp = require("sharp");
+const ffmpeg = require("fluent-ffmpeg");
+const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 
 const app = express();
 app.use(express.json());
@@ -19,9 +27,84 @@ let currentStats = {
     players: []
 };
 /* =========================
-   Database
+   S3 Config
+   Set these env vars:
+     AWS_REGION
+     AWS_ACCESS_KEY_ID
+     AWS_SECRET_ACCESS_KEY
+     S3_BUCKET
+     S3_BASE_URL  (optional, e.g. https://cdn.example.com)
+========================= */
+const s3 = new S3Client({ region: process.env.AWS_REGION || "eu-central-1" });
+const S3_BUCKET = process.env.S3_BUCKET;
+const S3_BASE_URL = process.env.S3_BASE_URL
+    ? process.env.S3_BASE_URL.replace(/\/$/, "")
+    : `https://${S3_BUCKET}.s3.${process.env.AWS_REGION || "eu-central-1"}.amazonaws.com`;
+
+/* =========================
+   Multer — store to tmp
+========================= */
+const upload = multer({
+    dest: os.tmpdir(),
+    limits: { fileSize: 500 * 1024 * 1024 }, // 500 MB
+    fileFilter(req, file, cb) {
+        const ok = /^(image|video)\//.test(file.mimetype);
+        cb(ok ? null : new Error("Only image and video files are allowed"), ok);
+    }
+});
+
+/* =========================
+   Helpers
 ========================= */
 
+/** SHA-256 hash of a Buffer, returned as hex */
+function hashBuffer(buf) {
+    return crypto.createHash("sha256").update(buf).digest("hex");
+}
+
+/** Upload a Buffer to S3, returns the public URL */
+async function uploadToS3(buffer, key, contentType) {
+    await s3.send(new PutObjectCommand({
+        Bucket: S3_BUCKET,
+        Key: key,
+        Body: buffer,
+        ContentType: contentType,
+        ACL: "public-read"
+    }));
+    return `${S3_BASE_URL}/${key}`;
+}
+
+/** Convert any image to PNG using sharp */
+async function toPNG(inputPath) {
+    return sharp(inputPath).png().toBuffer();
+}
+
+/** Convert any video to MP4 using ffmpeg, returns a Buffer */
+function toMP4(inputPath) {
+    return new Promise((resolve, reject) => {
+        const outPath = path.join(os.tmpdir(), `${crypto.randomUUID()}.mp4`);
+        ffmpeg(inputPath)
+            .outputOptions([
+                "-c:v libx264",
+                "-preset fast",
+                "-crf 22",
+                "-c:a aac",
+                "-movflags +faststart"
+            ])
+            .output(outPath)
+            .on("end", () => {
+                const buf = fs.readFileSync(outPath);
+                fs.unlink(outPath, () => {});
+                resolve(buf);
+            })
+            .on("error", reject)
+            .run();
+    });
+}
+
+/* =========================
+   Database
+========================= */
 const db = new sqlite3.Database("./database.db");
 
 db.serialize(() => {
@@ -172,6 +255,51 @@ app.post("/api/stats", (req, res) => {
 
 app.get("/api/stats", (req, res) => {
     res.json(currentStats);
+/* =========================
+   Upload — image → PNG, video → MP4
+   POST /api/upload
+   Auth: Bearer token (admin)
+   Body: multipart/form-data, field name "file"
+   Returns: { url: "https://..." }
+========================= */
+
+app.post("/api/upload", auth, adminOnly, upload.single("file"), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
+    const tmpPath = req.file.path;
+
+    try {
+        const mime = req.file.mimetype;
+        let buffer, ext, contentType;
+
+        if (mime.startsWith("image/")) {
+            // Convert to PNG regardless of source format
+            buffer = await toPNG(tmpPath);
+            ext = "png";
+            contentType = "image/png";
+        } else if (mime.startsWith("video/")) {
+            // Convert to MP4 regardless of source format
+            buffer = await toMP4(tmpPath);
+            ext = "mp4";
+            contentType = "video/mp4";
+        } else {
+            return res.status(400).json({ error: "Unsupported file type" });
+        }
+
+        // SHA-256 hash of the converted content → filename
+        const hash = hashBuffer(buffer);
+        const s3Key = `uploads/${hash}.${ext}`;
+
+        const url = await uploadToS3(buffer, s3Key, contentType);
+        res.json({ url });
+
+    } catch (err) {
+        console.error("Upload error:", err);
+        res.status(500).json({ error: "Processing or upload failed: " + err.message });
+    } finally {
+        // Always clean up the tmp file multer wrote
+        fs.unlink(tmpPath, () => {});
+    }
 });
 /* =========================
    Sections Routes

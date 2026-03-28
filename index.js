@@ -255,7 +255,8 @@ app.post("/api/stats", (req, res) => {
 
 app.get("/api/stats", (req, res) => {
     res.json(currentStats);
-/* =========================
+});
+    /* =========================
    Upload — image → PNG, video → MP4
    POST /api/upload
    Auth: Bearer token (admin)

@@ -131,7 +131,8 @@ function toMP4(inputPath) {
 const db = new sqlite3.Database("./database.db");
 
 db.serialize(() => {
-    // Users table with role
+    
+    // Accounts
     db.run(`
     CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY,
@@ -139,8 +140,16 @@ db.serialize(() => {
         password TEXT NOT NULL,
         role TEXT DEFAULT 'user'
     )`);
+    
+    // Short Links für Sign Picture
+    db.run(`
+    CREATE TABLE IF NOT EXISTS shortlinks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    longUrl TEXT UNIQUE,
+    shortUrl TEXT
+    )`);
 
-    // Sections table with all jSec fields
+    // Website Daten
     db.run(`
     CREATE TABLE IF NOT EXISTS sections (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -455,6 +464,96 @@ app.delete("/api/sections/:id", auth, adminOnly, (req,res)=>{
     });
 });
 
+/* =========================
+   Shorten URL (cached, admin only)
+   POST /api/shorten
+   Body: { url: "https://..." }
+========================= */
+
+app.post("/api/shorten", auth, adminOnly, async (req, res) => {
+    const { url } = req.body;
+
+    if (!url) {
+        return res.status(400).json({ error: "Missing URL" });
+    }
+
+    try {
+        // ✅ 1. Check database cache first
+        db.get(`SELECT shortUrl FROM shortlinks WHERE longUrl=?`, [url], async (err, row) => {
+            if (err) {
+                return res.status(500).json({ error: "Database error" });
+            }
+
+            if (row) {
+                // ✅ Already exists
+                return res.json({
+                    url: row.shortUrl,
+                    cached: true
+                });
+            }
+
+            try {
+                // ✅ 2. Call TinySRC API
+                const response = await fetch("https://api.tinysrc.me/v1/create", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({ url })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    return res.status(500).json({
+                        error: data.error || "Shortening failed"
+                    });
+                }
+
+                const shortUrl = data.url;
+
+                // ✅ 3. Save to database
+                db.run(
+                    `INSERT INTO shortlinks (longUrl, shortUrl) VALUES (?, ?)`,
+                    [url, shortUrl],
+                    function (err) {
+                        if (err) {
+                            // Edge case: race condition (duplicate insert)
+                            if (err.message.includes("UNIQUE")) {
+                                return db.get(
+                                    `SELECT shortUrl FROM shortlinks WHERE longUrl=?`,
+                                    [url],
+                                    (err2, row2) => {
+                                        if (err2) {
+                                            return res.status(500).json({ error: "Database error" });
+                                        }
+                                        return res.json({
+                                            url: row2.shortUrl,
+                                            cached: true
+                                        });
+                                    }
+                                );
+                            }
+
+                            return res.status(500).json({ error: "Database error" });
+                        }
+
+                        res.json({
+                            url: shortUrl,
+                            cached: false
+                        });
+                    }
+                );
+
+            } catch (err) {
+                res.status(500).json({ error: "TinySRC error: " + err.message });
+            }
+        });
+
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 /* =========================
    Start server
 ========================= */

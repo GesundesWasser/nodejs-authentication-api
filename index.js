@@ -49,7 +49,7 @@ const s3 = new S3Client({
 const S3_BUCKET = process.env.S3_BUCKET;
 const S3_BASE_URL = process.env.S3_BASE_URL
     ? process.env.S3_BASE_URL.replace(/\/$/, "")
-    : `${process.env.S3_ENDPOINT}/${S3_BUCKET}`;
+    : `${process.env.S3_ENDPOINT}`;
 
 /* =========================
    Multer — store to tmp

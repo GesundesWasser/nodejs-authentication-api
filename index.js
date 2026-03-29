@@ -12,8 +12,10 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { Upload } = require("@aws-sdk/lib-storage");
 const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 
+require('dotenv').config();
 const app = express();
 app.use(express.json());
 app.use(cors()); // enable CORS for all origins
@@ -35,11 +37,19 @@ let currentStats = {
      S3_BUCKET
      S3_BASE_URL  (optional, e.g. https://cdn.example.com)
 ========================= */
-const s3 = new S3Client({ region: process.env.AWS_REGION || "eu-central-1" });
+const s3 = new S3Client({
+    region: process.env.AWS_REGION || "us-east-1",
+    endpoint: process.env.S3_ENDPOINT,
+    credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+    },
+    forcePathStyle: true
+});
 const S3_BUCKET = process.env.S3_BUCKET;
 const S3_BASE_URL = process.env.S3_BASE_URL
     ? process.env.S3_BASE_URL.replace(/\/$/, "")
-    : `https://${S3_BUCKET}.s3.${process.env.AWS_REGION || "eu-central-1"}.amazonaws.com`;
+    : `${process.env.S3_ENDPOINT}/${S3_BUCKET}`;
 
 /* =========================
    Multer — store to tmp
@@ -47,10 +57,15 @@ const S3_BASE_URL = process.env.S3_BASE_URL
 const upload = multer({
     dest: os.tmpdir(),
     limits: { fileSize: 500 * 1024 * 1024 }, // 500 MB
-    fileFilter(req, file, cb) {
-        const ok = /^(image|video)\//.test(file.mimetype);
-        cb(ok ? null : new Error("Only image and video files are allowed"), ok);
-    }
+fileFilter(req, file, cb) {
+    const ext = path.extname(file.originalname).toLowerCase();
+
+    const allowed = [".png", ".jpg", ".jpeg", ".gif", ".mp4", ".webm", ".mov"];
+
+    const ok = allowed.includes(ext);
+
+    cb(ok ? null : new Error("Only image and video files are allowed"), ok);
+}
 });
 
 /* =========================
@@ -62,17 +77,25 @@ function hashBuffer(buf) {
     return crypto.createHash("sha256").update(buf).digest("hex");
 }
 
-/** Upload a Buffer to S3, returns the public URL */
-async function uploadToS3(buffer, key, contentType) {
-    await s3.send(new PutObjectCommand({
-        Bucket: S3_BUCKET,
-        Key: key,
-        Body: buffer,
-        ContentType: contentType,
-        ACL: "public-read"
-    }));
+async function uploadToS3(filePath, key, contentType) {
+    const fileStream = fs.createReadStream(filePath);
+
+    const upload = new Upload({
+        client: s3,
+        params: {
+            Bucket: S3_BUCKET,
+            Key: key,
+            Body: fileStream,
+            ContentType: contentType
+        },
+        queueSize: 4, // concurrency for multipart
+        partSize: 5 * 1024 * 1024 // 5 MB per part
+    });
+
+    await upload.done();
     return `${S3_BASE_URL}/${key}`;
 }
+
 
 /** Convert any image to PNG using sharp */
 async function toPNG(inputPath) {
@@ -271,34 +294,61 @@ app.post("/api/upload", auth, adminOnly, upload.single("file"), async (req, res)
 
     try {
         const mime = req.file.mimetype;
-        let buffer, ext, contentType;
+        let ext, contentType;
 
         if (mime.startsWith("image/")) {
-            // Convert to PNG regardless of source format
-            buffer = await toPNG(tmpPath);
+            // Convert to PNG
+            const buffer = await toPNG(tmpPath);
             ext = "png";
             contentType = "image/png";
+
+            // Save buffer to temp file for streaming
+            const tmpPng = tmpPath + ".png";
+            await fs.promises.writeFile(tmpPng, buffer);
+            const hash = hashBuffer(buffer);
+            const s3Key = `uploads/${hash}.${ext}`;
+
+            const url = await uploadToS3(tmpPng, s3Key, contentType);
+            fs.unlink(tmpPng, () => {});
+            res.json({ url });
+
         } else if (mime.startsWith("video/")) {
-            // Convert to MP4 regardless of source format
-            buffer = await toMP4(tmpPath);
+            // Convert to MP4
+            const mp4Path = path.join(os.tmpdir(), `${crypto.randomUUID()}.mp4`);
+            await new Promise((resolve, reject) => {
+                ffmpeg(tmpPath)
+                    .outputOptions([
+                        "-c:v libx264",
+                        "-preset fast",
+                        "-crf 22",
+                        "-c:a aac",
+                        "-movflags +faststart"
+                    ])
+                    .output(mp4Path)
+                    .on("end", resolve)
+                    .on("error", reject)
+                    .run();
+            });
+
+            // Hash from file buffer
+            const buffer = await fs.promises.readFile(mp4Path);
+            const hash = hashBuffer(buffer);
             ext = "mp4";
             contentType = "video/mp4";
+            const s3Key = `uploads/${hash}.${ext}`;
+
+            const url = await uploadToS3(mp4Path, s3Key, contentType);
+            fs.unlink(mp4Path, () => {});
+            res.json({ url });
+
         } else {
             return res.status(400).json({ error: "Unsupported file type" });
         }
-
-        // SHA-256 hash of the converted content → filename
-        const hash = hashBuffer(buffer);
-        const s3Key = `uploads/${hash}.${ext}`;
-
-        const url = await uploadToS3(buffer, s3Key, contentType);
-        res.json({ url });
 
     } catch (err) {
         console.error("Upload error:", err);
         res.status(500).json({ error: "Processing or upload failed: " + err.message });
     } finally {
-        // Always clean up the tmp file multer wrote
         fs.unlink(tmpPath, () => {});
     }
 });

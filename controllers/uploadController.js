@@ -32,7 +32,14 @@ router.post("/", auth, adminOnly, upload.single("file"), async (req, res) => {
     try {
         let ext, contentType, buffer;
 
-        if (mime.startsWith("image/")) {
+        if (mime === "image/svg+xml") {
+            logger.debug("Reading SVG as-is", { originalName });
+            buffer = await fs.promises.readFile(tmpPath);
+            ext = "svg";
+            contentType = "image/svg+xml";
+            logger.debug("SVG read complete", { originalName, outputSizeKB: (buffer.length / 1024).toFixed(1) });
+
+        } else if (mime.startsWith("image/")) {
             logger.debug("Converting image to PNG", { originalName });
             buffer = await toPNG(tmpPath);
             ext = "png";

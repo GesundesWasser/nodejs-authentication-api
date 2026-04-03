@@ -24,7 +24,6 @@ router.get("/", (req, res) => {
       const { buttonText, buttonFn, ...rest } = row;
       return {
         ...rest,
-        disabled: Boolean(row.disabled),
         button: buttonText ? { text: buttonText, fn: buttonFn } : null,
       };
     });
@@ -51,22 +50,19 @@ router.post("/", auth, adminOnly, (req, res) => {
   db.run(
     `
         INSERT INTO sections (
-            imgSrc,imgAlt,author,date,title,description,
-            videoSrc,videoType,buttonText,buttonFn,disabled
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            imgSrc,author,date,title,description,
+            videoSrc,buttonText,buttonFn
+        ) VALUES (?,?,?,?,?,?,?,?)
     `,
     [
       s.imgSrc,
-      s.imgAlt,
       author,
       date,
       s.title,
       s.description,
       s.videoSrc,
-      s.videoType,
       buttonText,
       buttonFn,
-      s.disabled ? 1 : 0,
     ],
     function (err) {
       if (err) {
@@ -109,23 +105,20 @@ router.put("/:id", auth, adminOnly, (req, res) => {
   db.run(
     `
         UPDATE sections SET
-        imgSrc=?, imgAlt=?, author=?, date=?,
-        title=?, description=?, videoSrc=?, videoType=?,
-        buttonText=?, buttonFn=?, disabled=?
+        imgSrc=?, author=?, date=?,
+        title=?, description=?, videoSrc=?,
+        buttonText=?, buttonFn=?
         WHERE id=?
     `,
     [
       s.imgSrc,
-      s.imgAlt,
       prozentAdmin(req.user),
       date,
       s.title,
       s.description,
       s.videoSrc,
-      s.videoType,
       buttonText,
       buttonFn,
-      s.disabled ? 1 : 0,
       id,
     ],
     function (err) {

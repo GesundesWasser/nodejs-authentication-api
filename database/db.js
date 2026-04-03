@@ -46,17 +46,13 @@ db.serialize(() => {
         CREATE TABLE IF NOT EXISTS sections (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             imgSrc TEXT,
-            imgAlt TEXT,
             author TEXT,
             date TEXT,
             title TEXT,
             description TEXT,
             videoSrc TEXT,
-            videoType TEXT,
-            showButton INTEGER,
             buttonText TEXT,
-            buttonLink TEXT,
-            disabled INTEGER
+            buttonFn TEXT
         )
     `,
     (err) => {

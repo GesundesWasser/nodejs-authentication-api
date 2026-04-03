@@ -20,11 +20,14 @@ router.get("/", (req, res) => {
             logger.error("Failed to fetch sections", { error: err.message });
             return res.status(500).json({ error: "Database error" });
         }
-        const sections = rows.map(row => ({
-            ...row,
-            showButton: Boolean(row.showButton),
-            disabled: Boolean(row.disabled)
-        }));
+        const sections = rows.map(row => {
+            const { buttonText, buttonFn, ...rest } = row;
+            return {
+                ...rest,
+                disabled: Boolean(row.disabled),
+                button: buttonText ? { text: buttonText, fn: buttonFn } : null
+            };
+        });
         logger.debug("Sections fetched", { count: sections.length });
         res.json(sections);
     });
@@ -36,18 +39,20 @@ router.post("/", auth, adminOnly, (req, res) => {
     const author = prozentAdmin(req.user);
     const date = new Intl.DateTimeFormat("de-AT", { timeZone: "Europe/Vienna", day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date());
 
+    const buttonText = s.button?.text ?? s.buttonText;
+    const buttonFn = s.button?.fn ?? s.button?.onClick?.toString() ?? s.buttonFn;
     logger.info("Creating section", { author, title: s.title });
 
     db.run(`
         INSERT INTO sections (
             imgSrc,imgAlt,author,date,title,description,
-            videoSrc,videoType,showButton,buttonText,buttonLink,disabled
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            videoSrc,videoType,buttonText,buttonFn,disabled
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
     `, [
         s.imgSrc, s.imgAlt, author, date,
         s.title, s.description,
         s.videoSrc, s.videoType,
-        s.showButton ? 1 : 0, s.buttonText, s.buttonLink,
+        buttonText, buttonFn,
         s.disabled ? 1 : 0
     ], function (err) {
         if (err) {
@@ -65,19 +70,21 @@ router.put("/:id", auth, adminOnly, (req, res) => {
     const id = req.params.id;
     const date = new Intl.DateTimeFormat("de-AT", { timeZone: "Europe/Vienna", day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date());
 
+    const buttonText = s.button?.text ?? s.buttonText;
+    const buttonFn = s.button?.fn ?? s.button?.onClick?.toString() ?? s.buttonFn;
     logger.info("Updating section", { id, updatedBy: prozentAdmin(req.user), title: s.title });
 
     db.run(`
         UPDATE sections SET
         imgSrc=?, imgAlt=?, author=?, date=?,
         title=?, description=?, videoSrc=?, videoType=?,
-        showButton=?, buttonText=?, buttonLink=?, disabled=?
+        buttonText=?, buttonFn=?, disabled=?
         WHERE id=?
     `, [
         s.imgSrc, s.imgAlt, prozentAdmin(req.user), date,
         s.title, s.description,
         s.videoSrc, s.videoType,
-        s.showButton ? 1 : 0, s.buttonText, s.buttonLink,
+        buttonText, buttonFn,
         s.disabled ? 1 : 0, id
     ], function (err) {
         if (err) {
